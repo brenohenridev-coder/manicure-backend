@@ -1,0 +1,77 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Professional {
+  id           String        @id @default(cuid())
+  name         String
+  username     String        @unique
+  email        String        @unique
+  password     String
+  role         Role          @default(PROFESSIONAL)
+  active       Boolean       @default(true)
+  avatarColor  String        @default("#F48FB1")
+  createdAt    DateTime      @default(now())
+  appointments Appointment[]
+}
+
+model Client {
+  id           String        @id @default(cuid())
+  fullName     String
+  cpf          String        @unique
+  phone        String
+  birthDate    DateTime
+  createdAt    DateTime      @default(now())
+  appointments Appointment[]
+}
+
+model Service {
+  id                  String               @id @default(cuid())
+  name                String
+  duration            Int                  // in minutes
+  price               Float
+  active              Boolean              @default(true)
+  appointmentServices AppointmentService[]
+}
+
+model Appointment {
+  id             String               @id @default(cuid())
+  client         Client               @relation(fields: [clientId], references: [id])
+  clientId       String
+  professional   Professional         @relation(fields: [professionalId], references: [id])
+  professionalId String
+  date           DateTime
+  endTime        DateTime
+  status         AppointmentStatus    @default(SCHEDULED)
+  paid           Boolean              @default(false)
+  totalPrice     Float
+  notes          String?
+  createdAt      DateTime             @default(now())
+  services       AppointmentService[]
+}
+
+model AppointmentService {
+  appointment   Appointment @relation(fields: [appointmentId], references: [id])
+  appointmentId String
+  service       Service     @relation(fields: [serviceId], references: [id])
+  serviceId     String
+
+  @@id([appointmentId, serviceId])
+}
+
+enum Role {
+  ADMIN
+  PROFESSIONAL
+}
+
+enum AppointmentStatus {
+  SCHEDULED
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+}
