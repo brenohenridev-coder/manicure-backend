@@ -1,11 +1,11 @@
 const express = require('express');
 const router = express.Router();
 const { PrismaClient } = require('@prisma/client');
-const { authenticate } = require('../middleware/auth');
+const { authenticate, authenticateClient } = require('../middleware/auth');
 
 const prisma = new PrismaClient();
 
-// GET /api/appointments/today (authenticated)
+// GET /api/appointments/today (profissional/admin)
 router.get('/today', authenticate, async (req, res) => {
   try {
     const today = new Date();
@@ -13,15 +13,8 @@ router.get('/today', authenticate, async (req, res) => {
     const tomorrow = new Date(today);
     tomorrow.setDate(tomorrow.getDate() + 1);
 
-    const where = {
-      date: { gte: today, lt: tomorrow },
-      status: { not: 'CANCELLED' }
-    };
-
-    // Professionals only see their own
-    if (req.user.role !== 'ADMIN') {
-      where.professionalId = req.user.id;
-    }
+    const where = { date: { gte: today, lt: tomorrow }, status: { not: 'CANCELLED' } };
+    if (req.user.role !== 'ADMIN') where.professionalId = req.user.id;
 
     const appointments = await prisma.appointment.findMany({
       where,
@@ -35,12 +28,11 @@ router.get('/today', authenticate, async (req, res) => {
 
     res.json(appointments);
   } catch (err) {
-    console.error(err);
     res.status(500).json({ error: 'Erro ao buscar agendamentos de hoje' });
   }
 });
 
-// GET /api/appointments/by-date?date=YYYY-MM-DD&professionalId=xxx
+// GET /api/appointments/by-date
 router.get('/by-date', authenticate, async (req, res) => {
   try {
     const { date, professionalId } = req.query;
@@ -51,12 +43,7 @@ router.get('/by-date', authenticate, async (req, res) => {
     const end = new Date(date);
     end.setHours(23, 59, 59, 999);
 
-    const where = {
-      date: { gte: start, lte: end },
-      status: { not: 'CANCELLED' }
-    };
-
-    // If professional, only their own; if admin can filter by professionalId
+    const where = { date: { gte: start, lte: end }, status: { not: 'CANCELLED' } };
     if (req.user.role !== 'ADMIN') {
       where.professionalId = req.user.id;
     } else if (professionalId) {
@@ -79,44 +66,33 @@ router.get('/by-date', authenticate, async (req, res) => {
   }
 });
 
-// POST /api/appointments (public - for booking)
-router.post('/', async (req, res) => {
+// POST /api/appointments — requer login do cliente
+router.post('/', authenticateClient, async (req, res) => {
   try {
-    const { clientId, professionalId, date, serviceIds } = req.body;
+    const { professionalId, date, serviceIds, notes } = req.body;
+    const clientId = req.client.id; // vem do token
 
-    if (!clientId || !professionalId || !date || !serviceIds?.length) {
+    if (!professionalId || !date || !serviceIds?.length) {
       return res.status(400).json({ error: 'Dados incompletos para agendamento' });
     }
 
-    // Get services to calculate duration and total
-    const services = await prisma.service.findMany({
-      where: { id: { in: serviceIds } }
-    });
-
-    if (!services.length) {
-      return res.status(400).json({ error: 'Serviços não encontrados' });
-    }
+    const services = await prisma.service.findMany({ where: { id: { in: serviceIds } } });
+    if (!services.length) return res.status(400).json({ error: 'Serviços não encontrados' });
 
     const totalDuration = services.reduce((sum, s) => sum + s.duration, 0);
     const totalPrice = services.reduce((sum, s) => sum + s.price, 0);
-
     const startDate = new Date(date);
     const endDate = new Date(startDate.getTime() + totalDuration * 60000);
 
-    // Check for conflicts
     const conflict = await prisma.appointment.findFirst({
       where: {
         professionalId,
         status: { not: 'CANCELLED' },
-        OR: [
-          { date: { lt: endDate }, endTime: { gt: startDate } }
-        ]
+        OR: [{ date: { lt: endDate }, endTime: { gt: startDate } }]
       }
     });
 
-    if (conflict) {
-      return res.status(409).json({ error: 'Horário não disponível, por favor escolha outro' });
-    }
+    if (conflict) return res.status(409).json({ error: 'Horário não disponível, por favor escolha outro' });
 
     const appointment = await prisma.appointment.create({
       data: {
@@ -125,9 +101,8 @@ router.post('/', async (req, res) => {
         date: startDate,
         endTime: endDate,
         totalPrice,
-        services: {
-          create: serviceIds.map(serviceId => ({ serviceId }))
-        }
+        notes: notes || null,
+        services: { create: serviceIds.map(serviceId => ({ serviceId })) }
       },
       include: {
         client: { select: { fullName: true } },
@@ -143,50 +118,106 @@ router.post('/', async (req, res) => {
   }
 });
 
-// PATCH /api/appointments/:id/payment (authenticated)
+// PATCH /api/appointments/:id/cancel — cliente cancela o próprio agendamento
+router.patch('/:id/cancel', authenticateClient, async (req, res) => {
+  try {
+    const appointment = await prisma.appointment.findUnique({ where: { id: req.params.id } });
+    if (!appointment) return res.status(404).json({ error: 'Agendamento não encontrado' });
+    if (appointment.clientId !== req.client.id) return res.status(403).json({ error: 'Acesso negado' });
+    if (appointment.status !== 'SCHEDULED') return res.status(400).json({ error: 'Apenas agendamentos pendentes podem ser cancelados' });
+
+    // Só pode cancelar com pelo menos 2h de antecedência
+    const hoursUntil = (new Date(appointment.date) - new Date()) / 3600000;
+    if (hoursUntil < 2) return res.status(400).json({ error: 'Cancelamento deve ser feito com pelo menos 2 horas de antecedência' });
+
+    const updated = await prisma.appointment.update({
+      where: { id: req.params.id },
+      data: { status: 'CANCELLED' }
+    });
+
+    res.json(updated);
+  } catch (err) {
+    res.status(500).json({ error: 'Erro ao cancelar agendamento' });
+  }
+});
+
+// PATCH /api/appointments/:id/reschedule — cliente remarca
+router.patch('/:id/reschedule', authenticateClient, async (req, res) => {
+  try {
+    const { date } = req.body;
+    if (!date) return res.status(400).json({ error: 'Nova data é obrigatória' });
+
+    const appointment = await prisma.appointment.findUnique({
+      where: { id: req.params.id },
+      include: { services: { include: { service: true } } }
+    });
+
+    if (!appointment) return res.status(404).json({ error: 'Agendamento não encontrado' });
+    if (appointment.clientId !== req.client.id) return res.status(403).json({ error: 'Acesso negado' });
+    if (appointment.status !== 'SCHEDULED') return res.status(400).json({ error: 'Apenas agendamentos pendentes podem ser remarcados' });
+
+    const hoursUntil = (new Date(appointment.date) - new Date()) / 3600000;
+    if (hoursUntil < 2) return res.status(400).json({ error: 'Remarcação deve ser feita com pelo menos 2 horas de antecedência' });
+
+    const totalDuration = appointment.services.reduce((sum, s) => sum + s.service.duration, 0);
+    const startDate = new Date(date);
+    const endDate = new Date(startDate.getTime() + totalDuration * 60000);
+
+    const conflict = await prisma.appointment.findFirst({
+      where: {
+        professionalId: appointment.professionalId,
+        status: { not: 'CANCELLED' },
+        id: { not: appointment.id },
+        OR: [{ date: { lt: endDate }, endTime: { gt: startDate } }]
+      }
+    });
+
+    if (conflict) return res.status(409).json({ error: 'Horário não disponível, escolha outro' });
+
+    const updated = await prisma.appointment.update({
+      where: { id: req.params.id },
+      data: { date: startDate, endTime: endDate }
+    });
+
+    res.json(updated);
+  } catch (err) {
+    res.status(500).json({ error: 'Erro ao remarcar agendamento' });
+  }
+});
+
+// PATCH /api/appointments/:id/payment (profissional/admin)
 router.patch('/:id/payment', authenticate, async (req, res) => {
   try {
     const { paid } = req.body;
     const appointment = await prisma.appointment.findUnique({ where: { id: req.params.id } });
     if (!appointment) return res.status(404).json({ error: 'Agendamento não encontrado' });
-
-    // Professionals can only update their own
     if (req.user.role !== 'ADMIN' && appointment.professionalId !== req.user.id) {
       return res.status(403).json({ error: 'Acesso negado' });
     }
-
     const updated = await prisma.appointment.update({
       where: { id: req.params.id },
       data: { paid: Boolean(paid) }
     });
-
     res.json(updated);
   } catch (err) {
     res.status(500).json({ error: 'Erro ao atualizar pagamento' });
   }
 });
 
-// PATCH /api/appointments/:id/status (authenticated)
+// PATCH /api/appointments/:id/status (profissional/admin)
 router.patch('/:id/status', authenticate, async (req, res) => {
   try {
     const { status } = req.body;
     const validStatuses = ['SCHEDULED', 'COMPLETED', 'CANCELLED', 'NO_SHOW'];
-    if (!validStatuses.includes(status)) {
-      return res.status(400).json({ error: 'Status inválido' });
-    }
+    if (!validStatuses.includes(status)) return res.status(400).json({ error: 'Status inválido' });
 
     const appointment = await prisma.appointment.findUnique({ where: { id: req.params.id } });
     if (!appointment) return res.status(404).json({ error: 'Agendamento não encontrado' });
-
     if (req.user.role !== 'ADMIN' && appointment.professionalId !== req.user.id) {
       return res.status(403).json({ error: 'Acesso negado' });
     }
 
-    const updated = await prisma.appointment.update({
-      where: { id: req.params.id },
-      data: { status }
-    });
-
+    const updated = await prisma.appointment.update({ where: { id: req.params.id }, data: { status } });
     res.json(updated);
   } catch (err) {
     res.status(500).json({ error: 'Erro ao atualizar status' });

@@ -101,3 +101,63 @@ router.put('/:id/password', authenticate, requireAdmin, async (req, res) => {
 });
 
 module.exports = router;
+
+// DELETE /api/professionals/:id (admin only)
+router.delete('/:id', authenticate, requireAdmin, async (req, res) => {
+  try {
+    const professional = await prisma.professional.findUnique({ where: { id: req.params.id } });
+    if (!professional) return res.status(404).json({ error: 'Profissional não encontrada' });
+
+    // Não permite excluir a si mesmo
+    if (professional.id === req.user.id) {
+      return res.status(400).json({ error: 'Você não pode excluir sua própria conta' });
+    }
+
+    // Verifica se tem agendamentos futuros
+    const futureAppointments = await prisma.appointment.count({
+      where: {
+        professionalId: req.params.id,
+        status: 'SCHEDULED',
+        date: { gt: new Date() }
+      }
+    });
+
+    if (futureAppointments > 0) {
+      return res.status(400).json({ error: `Não é possível excluir: profissional tem ${futureAppointments} agendamento(s) futuro(s)` });
+    }
+
+    await prisma.professional.delete({ where: { id: req.params.id } });
+    res.json({ message: 'Profissional excluída com sucesso' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Erro ao excluir profissional' });
+  }
+});
+
+// PATCH /api/professionals/:id/role (admin only)
+router.patch('/:id/role', authenticate, requireAdmin, async (req, res) => {
+  try {
+    const { role } = req.body;
+    if (!['ADMIN', 'PROFESSIONAL'].includes(role)) {
+      return res.status(400).json({ error: 'Perfil inválido' });
+    }
+
+    const professional = await prisma.professional.findUnique({ where: { id: req.params.id } });
+    if (!professional) return res.status(404).json({ error: 'Profissional não encontrada' });
+
+    if (professional.id === req.user.id) {
+      return res.status(400).json({ error: 'Você não pode alterar o próprio perfil' });
+    }
+
+    const updated = await prisma.professional.update({
+      where: { id: req.params.id },
+      data: { role },
+      select: { id: true, name: true, role: true, active: true }
+    });
+
+    res.json(updated);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Erro ao atualizar perfil' });
+  }
+});
