@@ -130,10 +130,6 @@ router.patch('/photo', authenticateClient, async (req, res) => {
     const { photo } = req.body;
     if (!photo) return res.status(400).json({ error: 'Foto é obrigatória' });
 
-    if (photo.length > 700000) {
-      return res.status(400).json({ error: 'Imagem muito grande. Use uma foto menor que 500kb' });
-    }
-
     await prisma.client.update({
       where: { id: req.client.id },
       data: { photo }
