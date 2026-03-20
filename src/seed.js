@@ -60,7 +60,10 @@ async function main() {
   ];
 
   for (const service of services) {
-    await prisma.service.create({ data: service }).catch(() => {});
+    const existing = await prisma.service.findFirst({ where: { name: service.name } });
+    if (!existing) {
+      await prisma.service.create({ data: service });
+    }
   }
 
   console.log('✅ Seed concluído!');
