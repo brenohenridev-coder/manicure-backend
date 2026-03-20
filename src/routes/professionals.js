@@ -11,7 +11,7 @@ router.get('/', async (req, res) => {
   try {
     const professionals = await prisma.professional.findMany({
       where: { active: true },
-      select: { id: true, name: true, avatarColor: true, role: true }
+      select: { id: true, name: true, avatarColor: true, photo: true, role: true }
     });
     res.json(professionals);
   } catch (err) {
@@ -100,20 +100,16 @@ router.put('/:id/password', authenticate, requireAdmin, async (req, res) => {
   }
 });
 
-module.exports = router;
-
 // DELETE /api/professionals/:id (admin only)
 router.delete('/:id', authenticate, requireAdmin, async (req, res) => {
   try {
     const professional = await prisma.professional.findUnique({ where: { id: req.params.id } });
     if (!professional) return res.status(404).json({ error: 'Profissional não encontrada' });
 
-    // Não permite excluir a si mesmo
     if (professional.id === req.user.id) {
       return res.status(400).json({ error: 'Você não pode excluir sua própria conta' });
     }
 
-    // Verifica se tem agendamentos futuros
     const futureAppointments = await prisma.appointment.count({
       where: {
         professionalId: req.params.id,
@@ -168,12 +164,10 @@ router.patch('/:id/photo', authenticate, async (req, res) => {
     const { photo } = req.body;
     if (!photo) return res.status(400).json({ error: 'Foto é obrigatória' });
 
-    // Apenas admin ou a própria profissional pode alterar
     if (req.user.role !== 'ADMIN' && req.user.id !== req.params.id) {
       return res.status(403).json({ error: 'Acesso negado' });
     }
 
-    // Limita tamanho ~500kb em base64
     if (photo.length > 700000) {
       return res.status(400).json({ error: 'Imagem muito grande. Use uma foto menor que 500kb' });
     }
@@ -185,6 +179,9 @@ router.patch('/:id/photo', authenticate, async (req, res) => {
 
     res.json({ message: 'Foto atualizada com sucesso' });
   } catch (err) {
+    console.error(err);
     res.status(500).json({ error: 'Erro ao atualizar foto' });
   }
 });
+
+module.exports = router;
