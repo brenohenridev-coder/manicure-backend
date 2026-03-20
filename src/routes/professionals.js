@@ -23,7 +23,7 @@ router.get('/', async (req, res) => {
 router.get('/all', authenticate, requireAdmin, async (req, res) => {
   try {
     const professionals = await prisma.professional.findMany({
-      select: { id: true, name: true, username: true, role: true, active: true, avatarColor: true, createdAt: true }
+      select: { id: true, name: true, username: true, role: true, active: true, avatarColor: true, photo: true, createdAt: true }
     });
     res.json(professionals);
   } catch (err) {
@@ -159,5 +159,32 @@ router.patch('/:id/role', authenticate, requireAdmin, async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Erro ao atualizar perfil' });
+  }
+});
+
+// PATCH /api/professionals/:id/photo (admin or self)
+router.patch('/:id/photo', authenticate, async (req, res) => {
+  try {
+    const { photo } = req.body;
+    if (!photo) return res.status(400).json({ error: 'Foto é obrigatória' });
+
+    // Apenas admin ou a própria profissional pode alterar
+    if (req.user.role !== 'ADMIN' && req.user.id !== req.params.id) {
+      return res.status(403).json({ error: 'Acesso negado' });
+    }
+
+    // Limita tamanho ~500kb em base64
+    if (photo.length > 700000) {
+      return res.status(400).json({ error: 'Imagem muito grande. Use uma foto menor que 500kb' });
+    }
+
+    await prisma.professional.update({
+      where: { id: req.params.id },
+      data: { photo }
+    });
+
+    res.json({ message: 'Foto atualizada com sucesso' });
+  } catch (err) {
+    res.status(500).json({ error: 'Erro ao atualizar foto' });
   }
 });
